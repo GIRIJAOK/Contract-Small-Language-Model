@@ -1,31 +1,16 @@
 # ContractIQ-SLM
 
-Parameter-efficient domain adaptation of a small language model for grounded contract clause verification and evidence extraction.
+**Track B — SLM Fine-Tuning**  
+**Scenario S2 — Gen AI for Enterprise Documents**
 
-## Assignment Setup
+ContractIQ-SLM is a domain-adapted small language model for **contract clause verification and grounded evidence extraction**.
 
-- **Track:** B — Small Language Model Fine-Tuning
-- **Scenario:** S2 — Enterprise Contract Intelligence
-- **Domain:** Commercial contract clause verification and grounded evidence extraction
-- **Base model:** Qwen/Qwen2.5-7B-Instruct
-- **Adaptation method:** DoRA
-
-## Overview
-
-ContractIQ-SLM explores whether a compact instruction-tuned language model can be adapted to better understand commercial contract clauses without full-model fine-tuning.
-
-For each example, the model receives:
-
-- a target contract clause
-- short guidance describing the clause
-- a passage from a commercial contract
-
-The model decides whether the clause is present and returns supporting evidence as structured JSON.
+Given a target legal clause, short clause guidance, and a contract passage, the model predicts whether the clause is present and returns the supporting evidence in structured JSON.
 
 ```json
 {
   "present": true,
-  "evidence": "exact supporting text from the contract"
+  "evidence": "supporting text from the contract"
 }
 ```
 
@@ -38,22 +23,67 @@ If the clause is not present:
 }
 ```
 
-The project focuses on classification quality, evidence grounding, structured-output reliability, and parameter-efficient adaptation.
+## Walkthrough Video
+
+[Watch the 5-minute technical walkthrough](https://drive.google.com/file/d/17OomiKY2zdaZ3eOa4TKz0DppcP-ZEjGO/view?usp=drive_link)
 
 ---
 
-## Dataset
+## 1. Problem Definition
 
-The project uses **CUAD v1 (Contract Understanding Atticus Dataset)**.
+Commercial contracts contain important clauses written in many different ways.
+
+A general instruction model can understand the text but may still miss a clause when the wording is indirect or domain-specific.
+
+The goal of this project is to improve a compact instruction model for two tasks:
+
+- decide whether a target legal clause is present
+- return supporting evidence directly from the supplied contract passage
+
+The main question is:
+
+> Can a compact 7B instruction model be adapted to improve contract clause detection and evidence extraction while keeping the output grounded in the source text?
+
+---
+
+## 2. Why Fine-Tuning?
+
+I first evaluated the original **Qwen2.5-7B-Instruct** model as the baseline.
+
+| Metric | Baseline Qwen |
+|---|---:|
+| Accuracy | 0.8289 |
+| Precision | 0.9429 |
+| Recall | 0.3976 |
+| F1 | 0.5593 |
+
+The baseline model had high precision, but recall was low. It was generally careful when predicting a clause, but it missed many clauses that were actually present.
+
+This showed that prompting alone was not enough for the target task.
+
+RAG was also considered. However, in this experiment the relevant contract passage is already supplied to the model, so retrieval is not the main problem.
+
+Fine-tuning was therefore used to improve:
+
+- legal clause understanding
+- clause presence/absence decisions
+- evidence extraction
+- structured JSON output
+
+---
+
+## 3. Dataset and SFT Data Preparation
+
+The project uses **CUAD v1 — Contract Understanding Atticus Dataset**.
 
 CUAD contains:
 
 - 510 commercial contracts
 - 41 legal clause categories
-- question-answer style annotations
-- evidence spans linked to contract text
+- clause-level annotations
+- supporting evidence spans
 
-For this experiment, eight clause categories were selected:
+For this experiment, I selected eight clause categories:
 
 1. Cap On Liability
 2. Audit Rights
@@ -64,18 +94,9 @@ For this experiment, eight clause categories were selected:
 7. Uncapped Liability
 8. Notice Period To Terminate Renewal
 
-Some categories are intentionally close in meaning, for example:
+### Contract-Level Split
 
-- Cap On Liability vs Uncapped Liability
-- Renewal Term vs Notice Period To Terminate Renewal
-
-This makes the task more meaningful than simple keyword matching.
-
----
-
-## Data Split
-
-Contracts were split at the **contract level** to avoid leakage between training, validation, and test sets.
+The dataset was split at the **contract level** so the same contract does not appear across training, validation, and test sets.
 
 | Split | Contracts | Examples |
 |---|---:|---:|
@@ -83,70 +104,84 @@ Contracts were split at the **contract level** to avoid leakage between training
 | Validation | 76 | 608 |
 | Test | 77 | 616 |
 
-The final test set was kept untouched until model selection and validation analysis were complete.
+The test set was kept untouched until the final model configuration was fixed.
+
+### SFT Example Format
+
+Each supervised fine-tuning example contains:
+
+1. target clause
+2. short clause guidance
+3. contract passage
+4. expected JSON answer
+
+For positive examples, the passage contains the annotated evidence.
+
+For negative examples, another realistic legal passage from the same contract was used where possible. This makes the task harder because the model still sees legal language, but it must decide whether the **specific target clause** is present.
+
+Training loss is calculated only on the assistant answer. The system and user prompt tokens are masked from the loss.
+
+The maximum sequence length was set to **3,072 tokens** after checking the token-length distribution of the SFT examples.
 
 ---
 
-## Training Data Construction
+## 4. Base Model Selection
 
-Each training example contains:
-
-- system instruction
-- target clause
-- clause guidance
-- contract passage
-- structured JSON answer
-
-For positive examples, the passage contains the annotated evidence span.
-
-For negative examples, passages were selected from the same contract where possible, so the model sees realistic legal text rather than artificially easy negatives.
-
-The model is trained only on the assistant response. System and user prompt tokens are masked from the training loss.
-
----
-
-## Base Model
-
-The base model is:
+The base model used in this project is:
 
 **Qwen/Qwen2.5-7B-Instruct**
 
-It was selected because it provides a practical balance between:
+**Mistral-7B-Instruct** was also considered as an alternative.
 
+Qwen was selected because it provides a good balance of:
+
+- compact 7B model size
 - instruction following
-- structured generation
-- model size
-- local deployment potential
-- PEFT support
+- structured JSON generation
+- Hugging Face and PEFT support
 
-The maximum training sequence length was set to **3,072 tokens** based on token-length analysis of the generated training examples.
+The main experimental comparison is between the **original Qwen baseline** and the **DoRA fine-tuned Qwen model**.
 
 ---
 
-## Why Fine-Tuning?
+## 5. Why DoRA?
 
-A zero-shot baseline was evaluated first using the same Qwen model.
+I selected **DoRA — Weight-Decomposed Low-Rank Adaptation** for parameter-efficient fine-tuning.
 
-The baseline showed high precision but low recall. When it identified a clause, it was usually correct, but it missed many clauses that were actually present.
+DoRA adapts the model without updating all of the base-model parameters. It separates the weight update into magnitude and direction, allowing efficient adaptation while keeping the number of trainable parameters small.
 
-The goal of fine-tuning was therefore to improve:
+For this project, the practical advantages were:
 
-- recognition of domain-specific legal language
-- recall of positive clauses
-- evidence extraction
-- JSON output consistency
-- grounding to the supplied contract passage
+- only about **0.28%** of the model parameters were trainable
+- the full 7B model did not need full fine-tuning
+- the adapter can be merged with the base model for inference
+- the method is suitable for focused domain adaptation
+
+### Why DoRA with BF16 Instead of QLoRA?
+
+QLoRA is useful when GPU memory is limited because the base model is loaded in 4-bit quantized form.
+
+For this experiment, an **NVIDIA A100 80GB GPU** was available, so the additional memory saving was not necessary.
+
+I therefore used DoRA with BF16 because it:
+
+- avoided 4-bit quantization during training
+- kept the training setup simpler
+- avoided adding quantization as another experimental variable
+- still kept the number of trainable parameters very small
+
+QLoRA would be a practical option for the same experiment on a smaller GPU.
 
 ---
 
-## Parameter-Efficient Fine-Tuning
+## 6. Training Configuration
 
-The final model was adapted using **DoRA — Weight-Decomposed Low-Rank Adaptation**.
+The final model was trained with the following configuration:
 
 | Parameter | Value |
 |---|---|
 | Base model | Qwen2.5-7B-Instruct |
-| PEFT method | DoRA |
+| Fine-tuning method | DoRA |
 | Rank | 8 |
 | Alpha | 16 |
 | Dropout | 0.05 |
@@ -158,10 +193,10 @@ The final model was adapted using **DoRA — Weight-Decomposed Low-Rank Adaptati
 | Batch size | 1 |
 | Gradient accumulation | 8 |
 | Effective batch size | 8 |
-| Trainable parameters | 21.6M |
-| Trainable percentage | ~0.28% |
+| Trainable parameters | 21,575,680 |
+| Trainable percentage | 0.2825% |
 
-DoRA was applied to:
+DoRA was applied to the attention and MLP projection layers:
 
 ```text
 q_proj
@@ -173,41 +208,21 @@ up_proj
 down_proj
 ```
 
-Training was performed on an **NVIDIA A100-SXM4-80GB** GPU.
+Training was performed on an **NVIDIA A100-SXM4-80GB GPU**.
 
-Final training loss:
+Training summary:
 
-```text
-0.01985
-```
-
-Final validation loss:
-
-```text
-0.009995
-```
+- final training loss: **0.0198**
+- validation loss: **0.0100**
+- training time: approximately **3 hours 19 minutes**
 
 ---
 
-## Why DoRA?
+## 7. Baseline vs Fine-Tuned Results
 
-Several PEFT approaches were considered.
+The baseline and fine-tuned model were evaluated on the same **608-example validation set**.
 
-**LoRA** is simple and widely used.
-
-**QLoRA** is attractive when GPU memory is limited because it keeps the base model in 4-bit precision.
-
-For this experiment, an A100 80GB GPU was available, so BF16 DoRA was used without quantization. This kept the experiment focused on domain adaptation without adding quantization as another variable.
-
-DoRA was chosen as the main PEFT method because it provides a more expressive low-rank adaptation while still training only a small fraction of the full model parameters.
-
----
-
-## Zero-Shot Baseline vs DoRA
-
-The same 608-example validation set was used for both models.
-
-| Metric | Zero-Shot Qwen | DoRA |
+| Metric | Baseline Qwen | DoRA Fine-Tuned |
 |---|---:|---:|
 | Accuracy | 0.8289 | **0.9622** |
 | Precision | **0.9429** | 0.9387 |
@@ -219,15 +234,53 @@ The same 608-example validation set was used for both models.
 | Unsupported Evidence Rate | 0.0714 | **0.0061** |
 | Valid JSON Rate | 0.9770 | **1.0000** |
 
-The largest improvement was in recall.
+The largest improvement was in **recall**.
 
-The zero-shot model identified only about 40% of the positive clauses, while the adapted model identified more than 92% on the validation set, while maintaining high precision.
+The baseline model missed many positive clauses. After fine-tuning, recall increased from **0.3976 to 0.9217**, while precision remained high.
 
 ---
 
-## Final Test Results
+## 8. Qualitative Example
 
-After model selection was completed using the validation set, the configuration was frozen and evaluated once on the untouched test set.
+### Target Clause
+
+**Termination For Convenience**
+
+### Supporting Evidence
+
+```text
+Either party may terminate this Agreement without cause at any time effective upon thirty (30) days' written notice.
+```
+
+### Baseline Qwen Output
+
+```json
+{
+  "present": false,
+  "evidence": null
+}
+```
+
+The baseline model missed the clause.
+
+### DoRA Fine-Tuned Output
+
+```json
+{
+  "present": true,
+  "evidence": "Either party may terminate this Agreement without cause at any time effective upon thirty (30) days' written notice."
+}
+```
+
+The fine-tuned model detected the clause and returned the supporting contract text.
+
+---
+
+## 9. Final Test Results
+
+After validation was complete, the final configuration was frozen and evaluated once on the untouched test set.
+
+The test set contains **616 examples from 77 unseen contracts**.
 
 | Metric | Test Result |
 |---|---:|
@@ -241,301 +294,244 @@ After model selection was completed using the validation set, the configuration 
 | Unsupported Evidence Rate | **0.0166** |
 | Valid JSON Rate | **0.9951** |
 | Valid Schema Rate | **0.9935** |
-| Average Inference Latency | **1.039 s/example** |
+| Average inference latency | **1.039 s/example** |
 
-The final test set contains **616 examples**.
-
----
-
-## Performance by Clause Type
-
-| Clause | Precision | Recall | F1 |
-|---|---:|---:|---:|
-| Audit Rights | 1.0000 | 0.9286 | 0.9630 |
-| Cap On Liability | 0.9697 | 0.9412 | 0.9552 |
-| Change Of Control | 0.9474 | 0.9474 | 0.9474 |
-| Exclusivity | 0.9677 | 0.9091 | 0.9375 |
-| Renewal Term | 1.0000 | 0.8400 | 0.9130 |
-| Uncapped Liability | 0.8333 | 0.9375 | 0.8824 |
-| Termination For Convenience | 0.8696 | 0.8000 | 0.8333 |
-| Notice Period To Terminate Renewal | 0.9091 | 0.6250 | 0.7407 |
-
-The weakest test category was **Notice Period To Terminate Renewal**, mainly because of missed positive examples.
+These results were obtained without further tuning on the test set.
 
 ---
 
-## Error Analysis
+## 10. Error Analysis
 
-On the final test set:
-
-```text
-False negatives : 24
-False positives : 10
-```
-
-False negatives were concentrated mainly in:
+The final test set had:
 
 ```text
-Notice Period To Terminate Renewal    6
-Termination For Convenience           5
-Renewal Term                          4
-Exclusivity                           3
-Audit Rights                          2
-Cap On Liability                      2
-Uncapped Liability                    1
-Change Of Control                     1
+False negatives: 24
+False positives: 10
 ```
+
+The most difficult category was **Notice Period To Terminate Renewal**, with a recall of **0.625**.
+
+The remaining errors mainly involved:
+
+- indirect legal wording
+- closely related legal concepts
+- renewal and termination conditions
+- longer evidence spans
 
 Additional observations:
 
+- 3 unsupported-evidence cases
 - 3 invalid JSON outputs
 - 4 schema-invalid outputs
-- 3 unsupported-evidence cases
 - 3 outputs reached the 256-token generation limit
 
-The test configuration was not changed after observing these cases.
+The model was not changed after reviewing the final test results.
 
 ---
 
-## Evidence Evaluation
+## 11. General Capability Check
 
-Exact string matching is too strict for this task because a model may return a longer valid supporting span than the CUAD annotation.
+A small general-capability sanity check was used to look for obvious signs of catastrophic forgetting.
 
-Evidence quality is therefore measured using:
+The test contained 15 prompts covering:
 
-- token-level evidence F1
-- evidence grounding against the supplied passage
-- unsupported evidence rate
+- arithmetic and reasoning
+- factual QA
+- instruction following
+- structured JSON generation
+- classification
+- information extraction
+- summarization
 
-This provides a more realistic measure of grounded extraction.
+| Model | Passed |
+|---|---:|
+| Base Qwen | 15 / 15 |
+| DoRA Fine-Tuned Model | 15 / 15 |
+| Observed Regressions | **0** |
 
----
+This is a limited diagnostic rather than a complete general-capability benchmark, but no obvious regression was observed on these prompts.
 
-## Inference
-
-For inference, the trained DoRA adapter is loaded on top of Qwen2.5-7B and merged into the base model before generation.
+Detailed results are stored in:
 
 ```text
-model = model.merge_and_unload(
-    safe_merge=True
-)
+results/general_capability/general_capability_results.json
 ```
-
-This removes PEFT runtime overhead.
-
-Generation is deterministic:
-
-```text
-do_sample = False
-max_new_tokens = 256
-```
-
-The merged model achieved approximately **1.04 seconds per test example** on the A100 GPU.
 
 ---
 
-## Environment
+## 12. Evidence Grounding
 
-The repository is intended to run with:
+Correct classification alone is not enough for this task.
+
+When the model predicts that a clause is present, the returned evidence should also come from the supplied contract passage.
+
+The final test model achieved a **98.34% grounded evidence rate**.
+
+For a production system, both the JSON structure and the supporting evidence should be validated before the result is shown to the user.
+
+---
+
+## 13. Production Direction
+
+A simple production flow could be:
+
+```text
+Contract / passage
+      ↓
+Backend API
+      ↓
+Fine-tuned Qwen model
+      ↓
+JSON and evidence validation
+      ↓
+Result shown to the user
+```
+
+For full contracts, a retrieval or passage-selection step would be added before the model.
+
+For deployment, the merged model can also be evaluated with lower-cost inference options such as quantization or an optimized serving runtime.
+
+---
+
+## 14. Limitations and Next Steps
+
+Current limitations:
+
+- only 8 of the 41 CUAD clause categories were used
+- the model receives a relevant passage instead of searching the full contract
+- the general-capability check contains only 15 prompts
+- the model has not yet been evaluated on an external contract dataset
+
+With more time, I would:
+
+- extend the experiment to more clause categories
+- add full-document retrieval
+- evaluate on an external contract dataset
+- test lower-cost deployment options
+- add a lightweight API and document-review interface
+
+---
+
+## 15. Environment
+
+Repository target environment:
 
 - **Python:** 3.12
-- **Training environment:** Google Colab
-- **Training GPU:** NVIDIA A100-SXM4-80GB
-- **Training precision:** BF16
+- **Transformers:** 5.17.0
+- **PEFT:** 0.21.0
 
-The main Python dependencies are pinned in `requirements.txt`.
+Training was executed in a managed Google Colab environment using:
 
----
+- **GPU:** NVIDIA A100-SXM4-80GB
+- **Precision:** BF16
+- **Colab runtime Python:** 3.13
 
-## Project Structure
-
-```text
-avathon-contractiq-slm/
-│
-├── data/
-│   └── processed/
-│
-├── results/
-│   ├── baselines/
-│   ├── dataset_analysis/
-│   ├── error_analysis/
-│   └── finetuned/
-│
-├── src/
-│   ├── benchmark/
-│   │   └── run_qwen_baseline.py
-│   │
-│   ├── data/
-│   │   ├── download_dataset.py
-│   │   ├── analyze_dataset.py
-│   │   ├── analyze_context_lengths.py
-│   │   ├── analyze_sft_tokens.py
-│   │   ├── build_splits.py
-│   │   └── build_sft_dataset.py
-│   │
-│   ├── evaluation/
-│   │   ├── evaluate_predictions.py
-│   │   ├── run_dora_inference.py
-│   │   ├── run_dora_test.py
-│   │   └── analyze_test_errors.py
-│   │
-│   └── training/
-│       └── train_dora.py
-│
-├── write-up/
-│   └── technical_writeup.md
-│
-├── .gitignore
-├── README.md
-└── requirements.txt
-```
-
-Generated datasets and large model artifacts are intentionally excluded from Git.
+Project dependencies are pinned in `requirements.txt`.
 
 ---
 
-## Reproducing the Results
+## 16. Reproducing the Main Pipeline
 
-### 1. Create an environment
-
-Use Python 3.12.
-
-```bash
-python -m venv .venv
-```
-
-Activate the environment and install dependencies:
+Install dependencies:
 
 ```bash
 pip install -r requirements.txt
 ```
 
-### 2. Download CUAD
-
-```bash
-python -m src.data.download_dataset
-```
-
-### 3. Build contract-level splits
-
-```bash
-python -m src.data.build_splits
-```
-
-### 4. Build SFT examples
+Build the SFT dataset:
 
 ```bash
 python -m src.data.build_sft_dataset
 ```
 
-This generates the train, validation, and test JSONL files under `data/processed/`.
-
-### 5. Run the zero-shot baseline
+Run the baseline:
 
 ```bash
 python -m src.benchmark.run_qwen_baseline
 ```
 
-### 6. Evaluate the zero-shot baseline
-
-```bash
-python -m src.evaluation.evaluate_predictions   --input results/baselines/qwen_zero_shot_predictions.jsonl   --output-dir results/baselines   --name qwen_zero_shot
-```
-
-### 7. Fine-tune Qwen with DoRA
+Train the DoRA model:
 
 ```bash
 python -m src.training.train_dora
 ```
 
-### 8. Run DoRA validation inference
+Run validation inference:
 
 ```bash
 python -m src.evaluation.run_dora_inference
 ```
 
-### 9. Evaluate validation predictions
-
-```bash
-python -m src.evaluation.evaluate_predictions   --input results/finetuned/qwen_dora_r8_validation_predictions.jsonl   --output-dir results/finetuned   --name qwen_dora_r8
-```
-
-### 10. Run final test inference
+Run final test inference:
 
 ```bash
 python -m src.evaluation.run_dora_test
 ```
 
-### 11. Evaluate the test set
-
-```bash
-python -m src.evaluation.evaluate_predictions   --input results/finetuned/qwen_dora_r8_test_predictions.jsonl   --output-dir results/finetuned   --name qwen_dora_r8_test   --validation data/processed/test_eval.jsonl   --split test
-```
-
-### 12. Run final error analysis
+Run test error analysis:
 
 ```bash
 python -m src.evaluation.analyze_test_errors
 ```
 
----
+Run the general-capability check:
 
-## Model Artifacts
-
-Large checkpoints and trained adapter weights are intentionally excluded from Git.
-
-The repository contains:
-
-- source code
-- deterministic data-generation logic
-- split metadata
-- baseline predictions
-- fine-tuned predictions
-- evaluation metrics
-- error analysis
-- technical write-up
-
-The trained DoRA adapter can be loaded with the original Qwen2.5-7B-Instruct model for reproduction or deployment.
-
----
-
-## Limitations
-
-This experiment focuses on eight CUAD clause categories rather than all 41 categories.
-
-The model is evaluated on contract passages containing relevant context rather than retrieving evidence from an entire long contract.
-
-Some legal concepts remain difficult when wording is indirect or overlaps with another clause category.
-
-Evidence generation may also produce a longer valid supporting span than the reference annotation.
-
-A production system could extend this work as:
-
-```text
-contract ingestion
-→ passage retrieval
-→ domain-adapted model
-→ structured output validation
-→ evidence grounding check
-→ downstream application
+```bash
+python -m src.evaluation.check_general_capability
 ```
 
-Additional evaluation across more contract types, clause categories, and external datasets would be needed before production deployment.
+---
+
+## 17. Project Structure
+
+```text
+avathon-contractiq-slm/
+├── configs/
+├── data/
+│   └── processed/
+├── results/
+│   ├── baselines/
+│   ├── dataset_analysis/
+│   ├── error_analysis/
+│   ├── finetuned/
+│   └── general_capability/
+├── src/
+│   ├── benchmark/
+│   ├── data/
+│   ├── evaluation/
+│   └── training/
+├── write-up/
+│   └── ContractIQ_SLM_Technical_Writeup.pdf
+├── .gitignore
+├── README.md
+└── requirements.txt
+```
+
+Large model checkpoints and adapter weights are intentionally not committed to Git.
+
+The repository contains the code, evaluation results, analysis, and technical write-up needed to understand and reproduce the experiment.
+
+---
+
+## 18. Technical Write-Up
+
+The technical write-up is available in:
+
+```text
+write-up/ContractIQ_SLM_Technical_Writeup.pdf
+```
 
 ---
 
 ## Key Takeaway
 
-The zero-shot Qwen model was already precise when it predicted that a clause was present, but it missed many positive clauses.
+The original Qwen baseline had high precision but low recall for contract clause detection.
 
-DoRA domain adaptation substantially improved recall, evidence extraction, and grounding while preserving high precision.
+After DoRA fine-tuning:
 
-On the untouched test set, the adapted 7B model achieved:
+- validation recall improved from **0.3976 to 0.9217**
+- validation F1 improved from **0.5593 to 0.9301**
+- final test F1 was **0.9101**
+- final grounded evidence rate was **0.9834**
 
-```text
-F1                  0.9101
-Macro F1            0.9351
-Grounded evidence   0.9834
-```
-
-The experiment shows that a relatively small parameter-efficient update can meaningfully improve domain-specific contract understanding without full-model fine-tuning.
+The results show that a small parameter-efficient update can substantially improve domain-specific contract clause understanding while keeping the output strongly grounded in the supplied source passage.
