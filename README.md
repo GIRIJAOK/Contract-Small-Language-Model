@@ -1,7 +1,7 @@
 # ContractIQ-SLM
 
-**Track B — SLM Fine-Tuning**  
-**Scenario S2 — Gen AI for Enterprise Documents**
+**SLM Fine-Tuning**  
+**Scenario - Gen AI for Enterprise Documents**
 
 ContractIQ-SLM is a domain-adapted small language model for **contract clause verification and grounded evidence extraction**.
 
